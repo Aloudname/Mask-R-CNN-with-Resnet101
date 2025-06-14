@@ -2,16 +2,20 @@ import os
 import cv2
 import json
 import glob
+import tqdm
 import torch
 import shutil
 import imgviz
 import argparse
 import numpy as np
 import albumentations as A
+import matplotlib.pyplot as plt
 import torchvision.transforms as T
 
+from PIL import Image
 from labelme import utils
 from pycocotools.coco import COCO
+import matplotlib.patches as patches
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from albumentations.pytorch import ToTensorV2
@@ -22,10 +26,12 @@ from sklearn.model_selection import train_test_split
 np.random.seed(41)
  
 # Spare 0 for background. Attention!
-classname_to_id = {"非典型增生": 1, "非典型增生术后": 2, "口腔白斑": 3, "口腔白斑术后": 4,
-             "口腔红斑": 5, "口腔黏膜溃痛": 6, "口腔苔藓化损伤": 7, "口腔苔藓样损伤": 8, 
-             "鳞状细胞癌术后": 9, "糜烂": 10, "疣状黄瘤": 11, "肿物": 12, "CA术后": 13}
- 
+# classname_to_id = {"非典型增生": 1, "非典型增生术后": 2, "口腔白斑": 3, "口腔白斑术后": 4,
+#              "口腔红斑": 5, "口腔黏膜溃痛": 6, "口腔苔藓化损伤": 7, "口腔苔藓样损伤": 8, 
+#              "鳞状细胞癌术后": 9, "糜烂": 10, "疣状黄瘤": 11, "肿物": 12, "CA术后": 13}
+
+classname_to_id = {"cancer_area": 1}
+
 class Lableme2CoCo:
     def __init__(self):
         self.images = []
@@ -36,7 +42,7 @@ class Lableme2CoCo:
  
     def save_coco_json(self, instance, save_path):
         json.dump(instance, open(save_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)  # indent = 2 for more delicate display.
- 
+
     # Transform .json into COCO dataset.
     def to_coco(self, json_path_list):
         self._init_categories()
@@ -106,6 +112,10 @@ class Lableme2CoCo:
         return [min_x, min_y, max_x - min_x, max_y - min_y]
 
 class CocoDataset(CocoDetection):
+    """
+    Inherited from torchvision.CocoDetection dataset format,
+    with all belonging functions.
+    """
     def __init__(self, img_folder, ann_file, transforms=None):
         super().__init__(img_folder, ann_file, transforms=None)
         self._load_coco_annotations(ann_file)
@@ -157,7 +167,105 @@ class CocoDataset(CocoDetection):
             'masks': masks,
         }      
         return img, target
+    def _sample(self, case_id = 0, frame_id = 0, ann_file = 'Pneuinput/annotations/instances_train.json', show_image=True):
+        """
+        Validate with highly customizable parameters in COCO dataset.
+        
+        params:
+        ann_file: annotation file path.
+        case_id: sample ID (int, e.g. 0 -> training_000)
+        frame_id: frame ID in a given sample (int, e.g. 31 -> training_XXX_031)
+        show_image: show img or label area in plot.
+        """
+        case_str = f"training_{case_id:03d}"
+        expected_filename = f"{case_str}_{frame_id:03d}.png"
+        
+        # check the image file.
+        image_path = os.path.join(self.root, expected_filename)
+        if not os.path.exists(image_path):
+            print(f"❌ No image file: {image_path}")
+            return False
+    
+        print(f"✅ Image file exists: {image_path}")
 
+        if not os.path.exists(ann_file):
+            print(f"❌ No annotation file: {ann_file}")
+            return False
+    
+        coco = COCO(ann_file)
+    
+        # check a single frame.
+        img_id = None
+        for img_info in coco.dataset["images"]:
+            if img_info["file_name"] == expected_filename:
+                img_id = img_info["id"]
+                print(f"✅ Target image exist: (ID: {img_id})")
+                break
+    
+        if img_id is None:
+            print(f"❌ No image target in sample: {expected_filename}")
+            return False
+        
+        # check the annotation. 
+        ann_ids = coco.getAnnIds(imgIds=img_id)
+        annotations = coco.loadAnns(ann_ids)
+    
+        if not annotations:
+            print("⚠️ Found target but without annotation!")
+            return False
+    
+        print(f"✅ Found {len(annotations)} targets.")
+    
+        # check the mask. 
+        valid_annotations = 0
+        for ann in annotations:
+            if "segmentation" in ann and ann["segmentation"]:
+                # Check mask code in RLE.
+                if isinstance(ann["segmentation"], dict) and "counts" in ann["segmentation"]:
+                    rle = ann["segmentation"]
+                    mask = coco.annToMask(ann)
+                    area = np.sum(mask)
+                
+                    # confirm the area of targeted and caculated area.
+                    if abs(area - ann["area"]) > 1:
+                        print(f"⚠️ Targeted ID {ann['id']} differs between caculated value and targeted value: "
+                              f"caculated={area:.2f}, targeted={ann['area']:.2f}")
+                    else:
+                        print(f"✅ Targeted ID {ann['id']} RLE mask area : {ann['area']:.2f}")
+                        valid_annotations += 1
+            
+                bbox = ann["bbox"]
+                if bbox[2] > 0 and bbox[3] > 0:
+                    print(f"  Boundary box: x={bbox[0]:.1f}, y={bbox[1]:.1f}, "
+                          f"width={bbox[2]:.1f}, height={bbox[3]:.1f}")
+                else:
+                    print(f"⚠️ Targeted ID {ann['id']} invalid boundary box: {bbox}")
+    
+        # visualization.
+        if show_image and valid_annotations > 0:
+            img = cv2.imread(image_path)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            
+            plt.figure(figsize=(12, 8))
+            plt.imshow(img, cmap='gray')
+            plt.title(f"Case {case_str} | Frame {frame_id}")
+        
+            for ann in annotations:
+                bbox = ann["bbox"]
+                rect = patches.Rectangle(
+                    (bbox[0], bbox[1]), bbox[2], bbox[3],
+                    linewidth=2, edgecolor='r', facecolor='none'
+                )
+                plt.gca().add_patch(rect)
+            
+                mask = coco.annToMask(ann)
+                mask = np.ma.masked_where(mask == 0, mask)
+                plt.imshow(mask, alpha=0.5, cmap='jet')
+        
+            plt.axis('off')
+            plt.show()
+    
+        return valid_annotations > 0
 
 # Below are selectable transforms.
 # Before changing library of transforms, 
@@ -181,13 +289,6 @@ transform = A.Compose([
         # min_visibility=0.1, # if required to filt very small frames.
         label_fields = ['category_ids']))
 
-from pycocotools.coco import COCO
-from PIL import Image
-import os
-import tqdm
-import cv2
-import imgviz
-import numpy as np
 
 def save_colored_mask(mask, save_path):
     lbl_pil = Image.fromarray(mask.astype(np.uint8), mode="P")
@@ -295,9 +396,10 @@ def collate_fn(batch):
     return images, targets
 
 # finally we get coco-style datasets.
-train_loader = CocoDataset('E:\\kq\\input\\coco\\images\\train', 'E:\\kq\\input\\coco\\annotations\\instances_train.json', transforms = transform)
-test_loader = CocoDataset('E:\\kq\\input\\coco\\images\\test', 'E:\\kq\\input\\coco\\annotations\\instances_test.json', transforms = transform)
+train_loader = CocoDataset('E:\\kq\\Pneuinput\\images\\train', 'E:\\kq\\Pneuinput\\annotations\\instances_train.json', transforms = transform)
+# test_loader = CocoDataset('E:\\kq\\Pneuinput\\images\\test', 'E:\\kq\\Pneuinput\\annotations\\instances_test.json', transforms = transform)
 
+# check the availability with highly customizable parameters.
 
 if __name__ == '__main__':
 
