@@ -1,5 +1,6 @@
 import torch
 import argparse
+import warnings
 import torch.nn as nn
 from tqdm.auto import tqdm
 import torch.optim as optim
@@ -8,14 +9,16 @@ import vision_reference_detection as utils
 from model import mask_rcnn
 from utils import save_model, save_loss_curve
 from BoxMode import train_one_epoch, evaluate
-from datasets import train_loader, test_loader
 from torchvision.ops.boxes import box_convert
+from datasets import train_loader, test_loader
 from torchvision.models.detection import MaskRCNN
 from torchvision.models.detection.rpn import AnchorGenerator
 from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
 
 
 # Activate by python train.py --epochs 20 --lr 0.005 --momentum 0.9 --weight-decay 0.0005
+
+warnings.filterwarnings("ignore")
 parser = argparse.ArgumentParser()
 parser.add_argument('-e', '--epochs', type=int, default=20,
                     help='number of epochs to train network for')
@@ -32,8 +35,8 @@ print(f"\nComputation device: {device}")
 
 model = mask_rcnn(
     pretrained=True,
-    fine_tune=True,
-    num_classes=14
+    fine_tune=False,
+    num_classes=2
 ).to(device)
 
 params = [p for p in model.parameters() if p.requires_grad]
@@ -53,7 +56,9 @@ lr_scheduler = torch.optim.lr_scheduler.StepLR(
 train_loss_history = []
 val_map_history = []
 
-print(f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters")
+print(f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters.")
+
+# print(model)
 
 for epoch in range(args.epochs):
     print(f"\n[Epoch {epoch+1}/{args.epochs}]")
@@ -65,7 +70,7 @@ for epoch in range(args.epochs):
     
     for image, target in tqdm(train_loader, desc="Training"):
         target['boxes'] = box_convert(
-            boxes=torch.tensor(target['boxes'].clone().detach()),
+            boxes=torch.tensor(target['boxes']),
             in_fmt='xywh', out_fmt='xyxy')
         images.append(image.to(device))
         targets.append({k: v.to(device) for k, v in target.items()})

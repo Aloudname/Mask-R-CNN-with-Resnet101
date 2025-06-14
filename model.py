@@ -27,13 +27,13 @@ def res34(pretrained = True, fine_tune = True, num_classes = 4):
         # paragraghs below are selectable "True" for better performance:
         # defreeze the last block.
         for param in model.layer4.parameters():
-            param.requires_grad = True
+            param.requires_grad = False
         # defreeze the 3rd block.
         for param in model.layer3.parameters():
-            param.requires_grad = True
+            param.requires_grad = False
         # defreeze the 2rd block.    
         for param in model.layer2.parameters():
-            param.requires_grad = True
+            param.requires_grad = False
         # defreeze the 1st block.
         for param in model.layer1.parameters():
             param.requires_grad = False
@@ -94,7 +94,7 @@ def res101(pretrained=True, fine_tune=True, num_classes=4):
 
 def mask_rcnn(pretrained=True, fine_tune=True, num_classes=4):
     """
-    Mask R-CNN based on Resnet-101.
+    Mask R-CNN based on Resnet.
     
     params:
     - pretrained: If pretrained model is applied.
@@ -102,17 +102,20 @@ def mask_rcnn(pretrained=True, fine_tune=True, num_classes=4):
     - num_classes: Used for segmentation. Counts of pathelogical classes and background, thus classes + 1.
     """
     
-    if pretrained:
-        print('[INFO]: Loading pre-trained ResNet101-FPN weights...')
-    else:
-        print('[INFO]: Training from scratch...')
-    
     # ResNet101-FPN backbone with default defreeze layer 4,3,2.
+    # Possible values = {'resnet18', 'resnet34', 'resnet50', 'resnet101', 'resnet152',
+    # 'resnext50_32x4d', 'resnext101_32x8d', 'wide_resnet50_2', 'wide_resnet101_2'}
+    backbone_name = 'resnet101'
     backbone = resnet_fpn_backbone(
-        backbone_name='resnet101',
+        backbone_name=backbone_name,
         pretrained=pretrained,
         trainable_layers=3
     )
+
+    if pretrained:
+        print(f'[INFO]: Loading pre-trained {backbone_name}-FPN weights...')
+    else:
+        print('[INFO]: Training from scratch...')
 
     # anchor generator.
     anchor_sizes = ((32,), (64,), (128,), (256,), (512,))
@@ -127,7 +130,7 @@ def mask_rcnn(pretrained=True, fine_tune=True, num_classes=4):
         backbone,
         num_classes=num_classes,
         rpn_anchor_generator=anchor_generator,
-        box_detections_per_img=200  # maximum box within an image.
+        box_detections_per_img=200  # maximum box within an image. 200 defaultly.
     )
 
     # Fine-tuning adjust within backbone resnet101.
@@ -146,7 +149,7 @@ def mask_rcnn(pretrained=True, fine_tune=True, num_classes=4):
             param.requires_grad = True
         # defreeze 3rd layer.
         for param in backbone.body.layer3.parameters():
-            param.requires_grad = True
+            param.requires_grad = False
         # defreeze 2nd layer.
         for param in backbone.body.layer2.parameters():
             param.requires_grad = False
@@ -195,11 +198,11 @@ class MaskRCNNPredictor(nn.Sequential):
     """Customized RCNN mask predictor with normalization."""
     def __init__(self, in_channels, dim_reduced, num_classes):
         super().__init__(
-            nn.Conv2d(in_channels, dim_reduced, 3, padding=1),
+            nn.Conv2d(in_channels, dim_reduced, kernel_size=3, padding=1),
             nn.BatchNorm2d(dim_reduced),
             nn.ReLU(inplace=True),
             nn.Dropout2d(0.2),
-            nn.Conv2d(dim_reduced, dim_reduced, 3, padding=1),
+            nn.Conv2d(dim_reduced, dim_reduced, kernel_size=3, padding=1),
             nn.BatchNorm2d(dim_reduced),
             nn.ReLU(inplace=True),
             nn.Conv2d(dim_reduced, num_classes, 1)
